@@ -294,7 +294,6 @@ async function generateDailyStats(c: any) {
           }, 可用率=${stats.availability.toFixed(2)}%`
         );
 
-        // 使用 UPSERT 操作
         await c.env.DB.prepare(
           `
           INSERT INTO monitor_daily_stats (
@@ -309,14 +308,6 @@ async function generateDailyStats(c: any) {
             availability,
             created_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(monitor_id, date) DO UPDATE SET
-            total_checks = excluded.total_checks,
-            up_checks = excluded.up_checks,
-            down_checks = excluded.down_checks,
-            avg_response_time = excluded.avg_response_time,
-            min_response_time = excluded.min_response_time,
-            max_response_time = excluded.max_response_time,
-            availability = excluded.availability
         `
         )
           .bind(
@@ -369,7 +360,7 @@ async function migrateMonitorHistoryData(c: any) {
     // 获取24小时前的监控历史数据
     const historyResult = await c.env.DB.prepare(
       `
-      SELECT * FROM monitor_status_history_24h
+      SELECT monitor_id, status, timestamp, response_time, status_code, error FROM monitor_status_history_24h
       WHERE timestamp < ?
     `
     )
@@ -380,30 +371,30 @@ async function migrateMonitorHistoryData(c: any) {
       `找到 ${historyResult.results.length} 条24小时前的监控历史数据`
     );
 
-    // 将数据迁移到冷表
-    await c.env.DB.prepare(
+    // 将数据逐条迁移到冷表
+    for (const record of historyResult.results) {
+      await c.env.DB.prepare(
+        `
+        INSERT INTO monitor_status_history (
+          monitor_id,
+          status,
+          timestamp,
+          response_time,
+          status_code,
+          error
+        ) VALUES (?, ?, ?, ?, ?, ?)
       `
-      INSERT INTO monitor_status_history (
-        monitor_id,
-        status,
-        timestamp,
-        response_time,
-        status_code,
-        error
-      ) VALUES (?, ?, ?, ?, ?, ?)
-    `
-    )
-      .bind(
-        historyResult.results.map((record: any) => [
+      )
+        .bind(
           record.monitor_id,
           record.status,
           record.timestamp,
           record.response_time,
           record.status_code,
-          record.error,
-        ])
-      )
-      .run();
+          record.error
+        )
+        .run();
+    }
 
     // 删除热表中的数据
     await c.env.DB.prepare(
@@ -415,7 +406,7 @@ async function migrateMonitorHistoryData(c: any) {
       .bind(timestamp)
       .run();
 
-    console.log("迁移完成，成功迁移了 ${historyResult.results.length} 条数据");
+    console.log(`迁移完成，成功迁移了 ${historyResult.results.length} 条数据`);
   } catch (error) {
     console.error("迁移24小时以前的监控历史数据时出错:", error);
   }
